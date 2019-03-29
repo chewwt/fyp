@@ -52,7 +52,7 @@ for mi in range(len(model_names)):
 
     else:
         print('Learning PPO2 model:', model_names[mi])
-        model = PPO2.load(model_names[0], env=env, tensorboard_log='./' + model_names[mi] + '_tb/')
+        model = PPO2.load(model_names[0], env=env, tensorboard_log='./' + model_names[0] + '_tb/')
         model.learn(total_timesteps=TOTAL_TRAIN_STEPS-BASE_TRAIN_STEPS, tb_log_name=model_names[mi] , reset_num_timesteps=False) 
         model.save(model_names[mi])
 
