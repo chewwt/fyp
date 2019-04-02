@@ -20,14 +20,14 @@ OBS_DIMS = None
 
 N_POLICIES = 3
 
-MAX_ITER = 2
+MAX_ITER = 10
 N_STATES = 500
-TRAJ_STEPS = 2
+TRAJ_STEPS = 1
 
 SIGMA = 7.0
 
 # number of samples to model a distribution (for mmd) [too high will run out of memory]
-N_SAMPLES = 100
+N_SAMPLES = 50
 
 FLOAT_MIN = -700
 
@@ -38,7 +38,18 @@ class CycleTf():
 
 
     #=========  Setup  =========#
-    def setup(self, model_names, expert_model, logdir='logs', measure='mvnkl', unhide=False):
+    # model_names = array of model names to be loaded
+    # expert_model = expert model name (takes priority over expert_mixture)
+    # expert_mixture = array same size as model_names, of float values, which 
+    #                  represents the weight of each model to make up a 
+    #                  mixture, that is the expert's policy
+    # logdir = folder to save the tensorboard log
+    # measure = 'mvnkl' mulitvariate KL divergence or 
+    #           'mmd' mean maximum discrepancy or 
+    #           'random' for random sampling
+    # unhide = whether to hide some observation states
+    # if expert_model and expert_mixture not specified, expert's model taken as the first model
+    def setup(self, model_names, expert_model=None, expert_mixture=None, logdir='logs', measure='mvnkl', unhide=False):
         # env = gym.make(NAME_ENV)
         # env = env.unwrapped
 
@@ -55,7 +66,9 @@ class CycleTf():
         #------ load the models --------#
         self.model_names = model_names
         self.models = self.load_models(model_names)  # actual PPO2 models
-        self.expert_model = self.load_models(expert_model)
+        
+        #------ expert's model ---------#
+        self.get_expert_model(model_names, expert_model, expert_mixture)
 
         #------ make environment --------#
         self.env = gym.make(NAME_ENV, exclude_current_positions_from_observation=(not unhide))
@@ -91,10 +104,66 @@ class CycleTf():
         else:
             return PPO2.load(model_names)
 
+    def get_expert_model(self, model_names, expert_model, expert_mixture):
+
+        if expert_model is not None:
+            self.expert_model = self.load_models(expert_model)
+            self.mixture = False
+        elif expert_mixture is None:
+            self.mixture = True
+            self.expert_mixture = [1.0] + (len(model_names) - 1) * [0]
+        elif len(expert_mixture) > len(model_names):
+            print('len(expert_mixture)', len(expert_mixture), '> len(model_names)', len(model_names))
+            print('truncating...')
+            self.expert_mixture = expert_mixture[:3]
+            self.mixture = True
+        elif len(expert_mixture) < len(model_names):
+            print('len(expert_mixture)', len(expert_mixture), '< len(model_names)', len(model_names))
+            print('padding with zeros...')
+            self.expert_mixture = expert_mixture + (len(model_names) - len(expert_mixture)) * [0]
+            self.mixture = True
+        else:
+            self.expert_mixture = expert_mixture
+            self.mixture = True
+
+        if self.mixture:
+            self.expert_mixture = np.array(self.expert_mixture) / sum(self.expert_mixture)
+            print('expert_mixture', self.expert_mixture)
+            self.build_get_traj_graph()
+
+
+    def build_get_traj_graph(self):
+        print('Building tf graph to get trajectory')
+
+        self.traj_mu_ph = {}
+        self.traj_sigma_ph = {}
+
+        for i in range(N_POLICIES):
+            self.traj_mu_ph[i] = tf.placeholder(tf.float32, shape=(ACTION_DIMS), name='traj_mu'+str(i))
+            self.traj_sigma_ph[i] = tf.placeholder(tf.float32, shape=(ACTION_DIMS), name='traj_sigma'+str(i))
+            # self.traj_cov_ph[i] = tf.placeholder(tf.float32, shape=(ACTION_DIMS, ACTION_DIMS), name='traj_cov'+str(i))
+
+        self.traj_mvn = {}
+        for i in range(N_POLICIES):
+            # self.mvn[i] = tfd.MultivariateNormalFullCovariance(loc=self.mu_raw_ph[i], covariance_matrix=self.cov_ph[i])
+            # sigma = tf.sqrt(tf.linalg.diag_part(self.cov_ph[i]))
+            # self.mvn[i] = tfd.MultivariateNormalDiag(loc=self.mu_raw_ph[i], scale_diag=sigma)
+            self.traj_mvn[i] = tfd.MultivariateNormalDiag(loc=self.traj_mu_ph[i], scale_diag=self.traj_sigma_ph[i])
+            
+        self.traj_probs_ph = tf.placeholder(tf.float32, shape=(N_POLICIES), name='traj_probs')
+        # Average of the distributions
+        self.traj_mvn['expert'] = tfd.Mixture(
+                                    cat=tfd.Categorical(probs=self.traj_probs_ph), \
+                                    components=[self.traj_mvn[0], self.traj_mvn[1], self.traj_mvn[2]])
+
+        self.traj = self.traj_mvn['expert'].sample(1)
+
 
     def build_tf_graph(self, measure='mvnkl'):
 
         print('Building tf graph')
+        if measure == 'random':
+            return
 
         # action probability distributions for each N_STATES state for the different policies
         self.mu_raw_ph = {}
@@ -111,10 +180,10 @@ class CycleTf():
         # reward functions probabilities
         self.norm_prob_rs_ph = tf.placeholder(tf.float32, shape=(N_POLICIES), name='norm_Pr')
 
-        self.prob_r0, self.prob_r1, self.prob_r2 = tf.split(self.norm_prob_rs_ph, num_or_size_splits=3, axis=0)
-        self.prob_r0 = tf.reshape(self.prob_r0, [])
-        self.prob_r1 = tf.reshape(self.prob_r1, [])
-        self.prob_r2 = tf.reshape(self.prob_r2, [])
+        # self.prob_r0, self.prob_r1, self.prob_r2 = tf.split(self.norm_prob_rs_ph, num_or_size_splits=3, axis=0)
+        # self.prob_r0 = tf.reshape(self.prob_r0, [])
+        # self.prob_r1 = tf.reshape(self.prob_r1, [])
+        # self.prob_r2 = tf.reshape(self.prob_r2, [])
         
         # With reference from https://github.com/dougalsutherland/opt-mmd/blob/master/two_sample/mmd.py
         # Quadratic-time MMD with Gaussian RBF kernel
@@ -133,14 +202,14 @@ class CycleTf():
                 # self.mvn[i] = tfd.MultivariateNormalFullCovariance(loc=self.mu_raw_ph[i], covariance_matrix=self.cov_ph[i])
                 sigma = tf.sqrt(tf.linalg.diag_part(self.cov_ph[i]))
                 self.mvn[i] = tfd.MultivariateNormalDiag(loc=self.mu_raw_ph[i], scale_diag=sigma)
-                print(self.mvn[i])
+                # print(self.mvn[i])
                 self.samples[i] = tf.transpose(self.mvn[i].sample(N_SAMPLES), perm=[1,0,2])
-                print(self.samples[i])
+                # print(self.samples[i])
                 self.samplesT[i] = tf.transpose(self.samples[i], perm=[0,2,1])
-                print(self.samplesT[i])
-                print('----')
+                # print(self.samplesT[i])
+                # print('----')
 
-            print(tf.reshape(tf.tile(self.norm_prob_rs_ph, [N_STATES]), (N_STATES, N_POLICIES)))
+            # print(tf.reshape(tf.tile(self.norm_prob_rs_ph, [N_STATES]), (N_STATES, N_POLICIES)))
 
             # Average of the distributions
             self.mvn['avg'] = tfd.Mixture(
@@ -155,15 +224,14 @@ class CycleTf():
             #                             tfd.MultivariateNormalDiag(loc=[2, -2], scale_diag=[8, 0.1]),
             #                             tfd.MultivariateNormalDiag(loc=[10, 2], scale_diag=[6, 0.05])
             #                         ])
-
             
-            print(self.mvn['avg'])
+            # print(self.mvn['avg'])
 
             self.samples['avg'] = tf.transpose(self.mvn['avg'].sample(N_SAMPLES), perm=[1,0,2])
 
-            print('samples', self.samples['avg'])
+            # print('samples', self.samples['avg'])
             self.samplesT['avg'] = tf.transpose(self.samples['avg'], perm=[0,2,1])
-            print('samplesT', self.samplesT['avg'])
+            # print('samplesT', self.samplesT['avg'])
 
             # Calculate with Kernel trick?
             self.mmd_mul = {}
@@ -180,7 +248,7 @@ class CycleTf():
             # print(tf.scalar_mul(-self.mmd_gamma, (-2 * self.mmd_mul['avg_avg'] + 2 * tf.expand_dims(self.mmd_sqnorms['avg'], axis=1))))
             self.mmd_K['avg_avg'] = tf.exp(-self.mmd_gamma * (
                                     -2 * self.mmd_mul['avg_avg'] + 2 * tf.expand_dims(self.mmd_sqnorms['avg'], axis=1)))
-            print('mmd_K', self.mmd_K['avg_avg'])
+            # print('mmd_K', self.mmd_K['avg_avg'])
             self.raw_dists = []
 
     
@@ -198,16 +266,16 @@ class CycleTf():
         
                 d = tf.reduce_mean(self.mmd_K[str(i)+'_'+str(i)], axis=[1,2]) + tf.reduce_mean(self.mmd_K['avg_avg'], axis=[1,2]) \
                     - 2 * tf.reduce_mean(self.mmd_K[str(i)+'_avg'], axis=[1,2])
-                print(d)
+                # print(d)
                 self.raw_dists.append(d)
 
             self.mmd_dists = tf.reduce_sum(self.raw_dists, axis=0)
             self.best_index = tf.argmax(self.mmd_dists)
 
-            print('mmd_Ks', self.mmd_K)
-            print('dists', self.raw_dists)
-            print('mmd_dists', self.mmd_dists)
-            print('best_index', self.best_index)
+            # print('mmd_Ks', self.mmd_K)
+            # print('dists', self.raw_dists)
+            # print('mmd_dists', self.mmd_dists)
+            # print('best_index', self.best_index)
         # KL divergence
         #if measure == 'mvnkl':
         else:
@@ -240,16 +308,27 @@ class CycleTf():
     def setup_tensorboard(self, logdir='logs', measure='mvnkl'):
         print('Setting up tensorboard')
 
-        # self.r0_writer = tf.summary.FileWriter(logdir + '/r0')
-        # self.r1_writer = tf.summary.FileWriter(logdir + '/r1')
-        # self.r2_writer = tf.summary.FileWriter(logdir + '/r2')
+        self.pr_writer = []
+        self.pr_writer.append(tf.summary.FileWriter(logdir + '/r0'))
+        self.pr_writer.append(tf.summary.FileWriter(logdir + '/r1'))
+        self.pr_writer.append(tf.summary.FileWriter(logdir + '/r2'))
          
-        self.writer = tf.summary.FileWriter(logdir)
+        # self.writer = tf.summary.FileWriter(logdir)
 
-        scalar_pr0 = tf.summary.scalar('Reward_Pr0', self.prob_r0)
-        scalar_pr1 = tf.summary.scalar('Reward_Pr1', self.prob_r1)
-        scalar_pr2 = tf.summary.scalar('Reward_Pr2', self.prob_r2)
-        self.summary_pr_op = tf.summary.merge([scalar_pr0, scalar_pr1, scalar_pr2])
+        # scalar_pr0 = tf.summary.scalar('P(R0)', self.prob_r0)
+        # scalar_pr1 = tf.summary.scalar('P(R1)', self.prob_r1)
+        # scalar_pr2 = tf.summary.scalar('P(R2)', self.prob_r2)
+        # self.summary_pr_op = tf.summary.merge([scalar_pr0, scalar_pr1, scalar_pr2])
+
+        # self.summary_pr0_op = tf.summary.merge([scalar_pr0])
+        # self.summary_pr1_op = tf.summary.merge([scalar_pr1])
+        # self.summary_pr2_op = tf.summary.merge([scalar_pr2])
+        self.scalar_pr_ph = tf.placeholder(tf.float32, shape=(), name='scalar_pr')
+        scalar_pr = tf.summary.scalar('P(R)', self.scalar_pr_ph)
+        self.summary_pr_op = tf.summary.merge([scalar_pr])
+
+        if measure == 'random':
+            return
 
         if measure == 'mmd':
             # pass
@@ -297,11 +376,34 @@ class CycleTf():
 
         return qpos, qvel
 
+    def expert_predict(self, obs):
+        if not self.mixture:
+            return self.expert_model.predict(obs)[0]
+        else:
+            # set up feeddict
+            feeddict = {}
 
-    # takes in starting state, expert's policy model
+            for pi in range(N_POLICIES):
+                # print('action_p', self.models[pi].action_probability(obs))
+                # print('predict', self.models[pi].predict(obs))
+                mus, sigmas =  self.models[pi].action_probability(obs) # [[mu1, mu2], [sigma1, sigma2]]
+
+                # print(mus,sigmas)
+                feeddict[self.traj_mu_ph[pi]] = np.squeeze(mus)
+                feeddict[self.traj_sigma_ph[pi]] = np.squeeze(sigmas)
+            
+            feeddict[self.traj_probs_ph] = self.expert_mixture
+
+            # print(feeddict)
+            a = self.sess.run(self.traj, feed_dict=feeddict)
+            # print(a)
+            
+            return a
+
+    # takes in starting state
     # num steps to move given by global variable TRAJ_STEPS
     # returns tau, represented by [a0, a1, ... a(N-1)], [s1, s2, ... aN], where N = steps
-    def get_traj(self, obs, piE):
+    def get_traj(self, obs):
         # env.set_state(s0[0], s0[1])
         # obs = env._get_obs()
         # obs = obs.reshape((-1,8))
@@ -309,13 +411,15 @@ class CycleTf():
 
         actions = []
         states = []
-
+        # print('obs', obs)
         for i in range(TRAJ_STEPS):
-            a, _ = piE.predict(obs)
+            a = self.expert_predict(obs)
             obs, reward, done, _ = self.env.step(a)
+            # print('a',a,'obs',obs)
             # print(obs)
             actions.append(a)
             states.append(obs)
+            obs = obs.reshape((-1,OBS_DIMS))
 
             # print('next', s_next)
             # s0 = s_next
@@ -351,7 +455,7 @@ class CycleTf():
 
                 # temp[i] *= p1
 
-                print(i, np.exp(log_prob))
+                print(i, np.exp(log_prob), 'action_prob', mus, sigmas)
 
                 # llh_trajs[i] *= p1 * p2
                 llh_trajs[i] += log_prob
@@ -420,43 +524,53 @@ class CycleTf():
                     action_probs['cov'+str(mi)] = np.vstack((action_probs['cov'+str(mi)], np.expand_dims(cov, axis=0)))
                     # action_probs['sigma'+str(mi)] = np.vstack((action_probs['sigma'+str(mi)], sigmas))
 
-            # set up feeddict
-            for pi in range(N_POLICIES):
-                feeddict[self.mu_raw_ph[pi]] = action_probs['mu'+str(pi)]
-                feeddict[self.cov_ph[pi]] = action_probs['cov'+str(pi)]
-                # feeddict[self.sigma_ph[pi]] = action_probs['sigma'+str(pi)]
 
-            feeddict[self.norm_prob_rs_ph] = self.prob_rs
+            if self.measure == 'random':
+                best_index = np.random.randint(0, N_STATES+1, 1)[0]
 
-            if self.measure == 'mmd':
-                # feeddict[self.mmd_sigma_ph] = 1.0
-                feeddict[self.mmd_sigma_ph] = SIGMA
+            else:
+                # set up feeddict
+                for pi in range(N_POLICIES):
+                    feeddict[self.mu_raw_ph[pi]] = action_probs['mu'+str(pi)]
+                    feeddict[self.cov_ph[pi]] = action_probs['cov'+str(pi)]
+                    # feeddict[self.sigma_ph[pi]] = action_probs['sigma'+str(pi)]
 
-            # print(feeddict)
-            # samples_avg = self.sess.run(self.samples['avg'],
-            #                                         feed_dict=feeddict)
-            # print(samples_avg.shape)
-            
-            best_index, dists, summary_dist, summary_pr = self.sess.run([self.best_index, self.mmd_dists, self.summary_dist_op, self.summary_pr_op],
-                                                    feed_dict=feeddict)
-            # best_index, mmd_dists, raw_dists, mmd_K, mmd_mul, mmd_sqnorms, mmd_gamma = self.sess.run([self.best_index, self.mmd_dists, self.raw_dists, self.mmd_K, self.mmd_mul, self.mmd_sqnorms, self.mmd_gamma],
-            #                                         feed_dict=feeddict)
+                feeddict[self.norm_prob_rs_ph] = self.prob_rs
+
+                if self.measure == 'mmd':
+                    # feeddict[self.mmd_sigma_ph] = 1.0
+                    feeddict[self.mmd_sigma_ph] = SIGMA
+
+                # print(feeddict)
+                # samples_avg = self.sess.run(self.samples['avg'],
+                #                                         feed_dict=feeddict)
+                # print(samples_avg.shape)
+                
+                best_index, dists, summary_dist = self.sess.run([self.best_index, self.mmd_dists, self.summary_dist_op],
+                                                                feed_dict=feeddict)
+                # best_index, mmd_dists, raw_dists, mmd_K, mmd_mul, mmd_sqnorms, mmd_gamma = self.sess.run([self.best_index, self.mmd_dists, self.raw_dists, self.mmd_K, self.mmd_mul, self.mmd_sqnorms, self.mmd_gamma],
+                #                                         feed_dict=feeddict)
 
 
-            # print(self.prob_rs, self.log_prob_rs)
-            # print(kld)
-            # print(mmd_dists, raw_dists)
-            # print('mmd_K', mmd_K['avg_avg'])
-            # print('mmd_mul', mmd_mul['avg_avg'])
-            # print('mmd_sqnorms', mmd_sqnorms['avg'])
-            # print('mmd_gamma', mmd_gamma)
+                # print(self.prob_rs, self.log_prob_rs)
+                # print(kld)
+                # print(mmd_dists, raw_dists)
+                # print('mmd_K', mmd_K['avg_avg'])
+                # print('mmd_mul', mmd_mul['avg_avg'])
+                # print('mmd_sqnorms', mmd_sqnorms['avg'])
+                # print('mmd_gamma', mmd_gamma)
+
+                # summary_dist, summary_pr = self.sess.run([self.summary_dist_op, self.summary_pr_op],
+                #                                         feed_dict=feeddict)
+                self.pr_writer[0].add_summary(summary_dist, i+1)
+
             print(best_index)
 
-            # summary_dist, summary_pr = self.sess.run([self.summary_dist_op, self.summary_pr_op],
-            #                                         feed_dict=feeddict)
+            #------ Store results in tensorboard ------#
+            for pi in range(N_POLICIES):
+                summary_pr = self.sess.run(self.summary_pr_op, {self.scalar_pr_ph: self.prob_rs[pi]})
+                self.pr_writer[pi].add_summary(summary_pr, i)
 
-            self.writer.add_summary(summary_dist, i+1)
-            self.writer.add_summary(summary_pr, i)
 
             ###---- Get from Expert's Trajectory ----###
             best_state = states[best_index]
@@ -464,7 +578,7 @@ class CycleTf():
             obs = self.env._get_obs()
             obs = obs.reshape((-1,OBS_DIMS))
 
-            actions_E, states_E = self.get_traj(obs, self.expert_model)
+            actions_E, states_E = self.get_traj(obs)
             print(actions_E, states_E)
             self.update_r_belief(obs, actions_E, states_E)
 
@@ -476,25 +590,33 @@ class CycleTf():
             # print('P(R)s: ', p_prob_rs)
             # prob_rs_history = np.vstack((prob_rs_history, p_prob_rs))
 
-        summary_pr = self.sess.run(self.summary_pr_op, \
-                            feed_dict={self.norm_prob_rs_ph: self.prob_rs})
-
-        self.writer.add_summary(summary_pr, MAX_ITER)
-
+        #------ Store results in tensorboard ------#
+        for pi in range(N_POLICIES):
+            summary_pr = self.sess.run(self.summary_pr_op, {self.scalar_pr_ph: self.prob_rs[pi]})
+            self.pr_writer[pi].add_summary(summary_pr, i)
 
 
 def main(logdir, measure, unhide):
     # model_names = ['swimmer_r0_ppo2_3000000', 'swimmer_r1new_ppo2_3000000', 'swimmer_r2_ppo2_3000000']
     # model_names = ['swimmerv3_r0_ppo2_3000000', 'swimmerv3_r1_ppo2_3000000', 'swimmerv3_r2_ppo2_3000000']
     # model_names = ['swimmerv3_unclip_unhide_r0_ppo2_3000000', 'swimmerv3_unclip_unhide_r1_ppo2_3000000', 'swimmerv3_unclip_unhide_r2_ppo2_3000000']
-    model_names = ['swimmerv3_unclip_unhide_r0_fwd_w_1-0_ctrl_w_0-0001_ppo2_5000000', 'swimmerv3_unclip_unhide_r1_fwd_w_1-005_ctrl_w_0-0001_ppo2_5000000', 'swimmerv3_unclip_unhide_r2_fwd_w_0-995_ctrl_w_0-0001_ppo2_5000000']
+    # model_names = ['swimmerv3_unclip_unhide_r0_fwd_w_1-0_ctrl_w_0-0001_ppo2_5000000', 'swimmerv3_unclip_unhide_r1_fwd_w_1-005_ctrl_w_0-0001_ppo2_5000000', 'swimmerv3_unclip_unhide_r2_fwd_w_0-995_ctrl_w_0-0001_ppo2_5000000']
+    # model_names = ['swimmerv3_unclip_unhide_r0_from_base5_2500000_fwd_w_1-0_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_unhide_r1_from_base5_2500000_fwd_w_1-05_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_unhide_r2_from_base5_2500000_fwd_w_0-95_ctrl_w_0-0001_ppo2_3000000']
+    # model_names = ['swimmerv3_unclip_unhide_r0_base5_fwd_w_1-0_ctrl_w_0-0001_ppo2_2500000', 'swimmerv3_unclip_unhide_r1_from_base5_2500000_fwd_w_1-05_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_unhide_r2_from_base5_2500000_fwd_w_0-95_ctrl_w_0-0001_ppo2_3000000']
+    # model_names = ['swimmerv3_unclip_50_unhide_r0_from_base6_2500000_fwd_w_1-0_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_50_unhide_r1_from_base6_2500000_fwd_w_1-05_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_50_unhide_r2_from_base6_2500000_fwd_w_0-95_ctrl_w_0-0001_ppo2_3000000']
+    model_names = ['swimmerv3_unclip_20_unhide_r0_from_base9_1000000_fwd_w_1-0_ctrl_w_0-0001_ppo2_1500000', 'swimmerv3_unclip_20_unhide_r1_from_base9_1000000_fwd_w_1-05_ctrl_w_0-0001_ppo2_1500000', 'swimmerv3_unclip_20_unhide_r2_from_base9_1000000_fwd_w_0-95_ctrl_w_0-0001_ppo2_1500000']
+
     # expert_model = 'swimmerv3_unclip_unhide_r0_ppo2_3000000'
     # expert_model = 'swimmerv3_unclip_unhide_r1_fwd_w_1-05_ctrl_w_0-0001_ppo2_5000000'
-    expert_model = 'swimmerv3_unclip_unhide_r0_fwd_w_1-0_ctrl_w_0-0001_ppo2_5000000'
-
+    # expert_model = 'swimmerv3_unclip_unhide_r0_fwd_w_1-0_ctrl_w_0-0001_ppo2_5000000'
+    # expert_model = 'swimmerv3_unclip_unhide_r0_base5_fwd_w_1-0_ctrl_w_0-0001_ppo2_2500000'
+    # expert_model = 'swimmerv3_unclip_unhide_r0_from_base5_2500000_fwd_w_1-0_ctrl_w_0-0001_ppo2_3000000'
+    # expert_model = 'swimmerv3_unclip_20_unhide_r0_from_base9_1000000_fwd_w_1-0_ctrl_w_0-0001_ppo2_1500000'
+    expert_model = 'swimmerv3_unclip_20_unhide_r0_base9_fwd_w_1-0_ctrl_w_0-0001_ppo2_1000000'
     
     cycle = CycleTf()
     cycle.setup(model_names, expert_model, logdir=logdir, measure=measure, unhide=unhide)
+    # cycle.setup(model_names, expert_mixture=[0.7, 0.15, 0.15], logdir=logdir, measure=measure, unhide=unhide)
     # prob_rs_history = cycle.cycle()
     # cycle.plot_prob_rs(prob_rs_history)
     cycle.new_cycle()
@@ -504,7 +626,7 @@ if __name__ == '__main__':
 
     p = argparse.ArgumentParser(description='Run Active Learning for IRL cycle using stochastic stable baselines models on Swimmer-v3 from OpenAI Gym')
     p.add_argument('--logdir', type=str, default='logs', help='directory to save tensorboard summaries to')
-    p.add_argument('--measure', type=str, default='mvnkl', help='distance measure to compare distributions with. mvnkl or mmd')
+    p.add_argument('--measure', type=str, default='mvnkl', help='distance measure to compare distributions with. mvnkl or mmd or random')
     p.add_argument('--unhide', type=bool, default=False, help='whether to include all states for observations')
 
     args = p.parse_args()
