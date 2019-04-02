@@ -12,16 +12,27 @@ import tensorflow_probability as tfp
 
 tfd = tfp.distributions
 
-NAME_ENV = 'Swimmer-v3'
-ACTION_DIMS = 2
-HIDE_OBS_DIMS = 8
-UNHIDE_OBS_DIMS = 10
+# NAME_ENV = 'Swimmer-v3'
+# ACTION_DIMS = 2
+# HIDE_OBS_DIMS = 8
+# UNHIDE_OBS_DIMS = 10
+# QPOS_END = 5
+# QVEL_END = 10
+
+NAME_ENV = 'Ant-v3'
+ACTION_DIMS = 8
+HIDE_OBS_DIMS = 113-2
+UNHIDE_OBS_DIMS = 113
+QPOS_END = 15
+QVEL_END = 15+14
+
 OBS_DIMS = None
 
 N_POLICIES = 3
 
 MAX_ITER = 10
 N_STATES = 500
+# N_STATES = 10
 TRAJ_STEPS = 1
 
 SIGMA = 7.0
@@ -352,7 +363,7 @@ class CycleTf():
     # get a random state, return qpos, qvel
     # compared visually to obtained states
     def get_random_state(self, yaml_file=None):
-        if yaml_file is None:
+        if yaml_file is None: # only for swimmer
             qpos = np.array([0., 0., 0., 0., 0.])
             qpos[:2] = np.random.uniform(-2, 5, 2)
             qpos[2] = np.random.uniform(-1.7, 2.2)
@@ -371,8 +382,8 @@ class CycleTf():
             cov = np.array(data['cov'])
 
             state = np.random.multivariate_normal(mean, cov)
-            qpos = state[:5]
-            qvel = state[5:]
+            qpos = state[:QPOS_END]
+            qvel = state[QPOS_END:QVEL_END]
 
         return qpos, qvel
 
@@ -505,7 +516,7 @@ class CycleTf():
             feeddict = {}
             
             for si in range(N_STATES):
-                new_qpos, new_qvel = self.get_random_state(yaml_file='states.yaml')
+                new_qpos, new_qvel = self.get_random_state(yaml_file=NAME_ENV+'_states.yaml')
                 self.env.set_state(new_qpos, new_qvel)
                 states.append([new_qpos, new_qvel])
 
@@ -526,7 +537,7 @@ class CycleTf():
 
 
             if self.measure == 'random':
-                best_index = np.random.randint(0, N_STATES+1, 1)[0]
+                best_index = np.random.randint(0, N_STATES, 1)[0]
 
             else:
                 # set up feeddict
@@ -604,7 +615,9 @@ def main(logdir, measure, unhide):
     # model_names = ['swimmerv3_unclip_unhide_r0_from_base5_2500000_fwd_w_1-0_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_unhide_r1_from_base5_2500000_fwd_w_1-05_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_unhide_r2_from_base5_2500000_fwd_w_0-95_ctrl_w_0-0001_ppo2_3000000']
     # model_names = ['swimmerv3_unclip_unhide_r0_base5_fwd_w_1-0_ctrl_w_0-0001_ppo2_2500000', 'swimmerv3_unclip_unhide_r1_from_base5_2500000_fwd_w_1-05_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_unhide_r2_from_base5_2500000_fwd_w_0-95_ctrl_w_0-0001_ppo2_3000000']
     # model_names = ['swimmerv3_unclip_50_unhide_r0_from_base6_2500000_fwd_w_1-0_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_50_unhide_r1_from_base6_2500000_fwd_w_1-05_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_50_unhide_r2_from_base6_2500000_fwd_w_0-95_ctrl_w_0-0001_ppo2_3000000']
-    model_names = ['swimmerv3_unclip_20_unhide_r0_from_base9_1000000_fwd_w_1-0_ctrl_w_0-0001_ppo2_1500000', 'swimmerv3_unclip_20_unhide_r1_from_base9_1000000_fwd_w_1-05_ctrl_w_0-0001_ppo2_1500000', 'swimmerv3_unclip_20_unhide_r2_from_base9_1000000_fwd_w_0-95_ctrl_w_0-0001_ppo2_1500000']
+    # model_names = ['swimmerv3_unclip_20_unhide_r0_from_base9_1000000_fwd_w_1-0_ctrl_w_0-0001_ppo2_1500000', 'swimmerv3_unclip_20_unhide_r1_from_base9_1000000_fwd_w_1-05_ctrl_w_0-0001_ppo2_1500000', 'swimmerv3_unclip_20_unhide_r2_from_base9_1000000_fwd_w_0-95_ctrl_w_0-0001_ppo2_1500000']
+    # model_names = ['swimmerv3_unclip_20_unhide_r0_from_base10_1000000_fwd_w_1-0_ctrl_w_0-0001_ppo2_1200000', 'swimmerv3_unclip_20_unhide_r1_from_base10_1000000_fwd_w_1-05_ctrl_w_0-0001_ppo2_1200000', 'swimmerv3_unclip_20_unhide_r2_from_base10_1000000_fwd_w_0-95_ctrl_w_0-0001_ppo2_1200000']
+    model_names = ['antv3_unclip_20_unhide_r0_from_base_1000000_ctrl_w_0-5_contact_w_0-0005_ppo2_1200000', 'antv3_unclip_20_unhide_r1_from_base_1000000_ctrl_w_0-505_contact_w_0-0005_ppo2_1200000', 'antv3_unclip_20_unhide_r2_from_base_1000000_ctrl_w_0-495_contact_w_0-0005_ppo2_1200000']
 
     # expert_model = 'swimmerv3_unclip_unhide_r0_ppo2_3000000'
     # expert_model = 'swimmerv3_unclip_unhide_r1_fwd_w_1-05_ctrl_w_0-0001_ppo2_5000000'
@@ -612,7 +625,10 @@ def main(logdir, measure, unhide):
     # expert_model = 'swimmerv3_unclip_unhide_r0_base5_fwd_w_1-0_ctrl_w_0-0001_ppo2_2500000'
     # expert_model = 'swimmerv3_unclip_unhide_r0_from_base5_2500000_fwd_w_1-0_ctrl_w_0-0001_ppo2_3000000'
     # expert_model = 'swimmerv3_unclip_20_unhide_r0_from_base9_1000000_fwd_w_1-0_ctrl_w_0-0001_ppo2_1500000'
-    expert_model = 'swimmerv3_unclip_20_unhide_r0_base9_fwd_w_1-0_ctrl_w_0-0001_ppo2_1000000'
+    # expert_model = 'swimmerv3_unclip_20_unhide_r0_base9_fwd_w_1-0_ctrl_w_0-0001_ppo2_1000000'
+    # expert_model = 'swimmerv3_unclip_20_unhide_r0_base10_fwd_w_1-0_ctrl_w_0-0001_ppo2_1000000'
+    # expert_model = 'swimmerv3_unclip_20_unhide_r0_base9_fwd_w_1-0_ctrl_w_0-0001_ppo2_1000000'
+    expert_model = 'antv3_unclip_20_unhide_r0_base_ctrl_w_0-5_contact_w_0-0005_ppo2_1000000'
     
     cycle = CycleTf()
     cycle.setup(model_names, expert_model, logdir=logdir, measure=measure, unhide=unhide)
