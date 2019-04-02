@@ -7,24 +7,31 @@ import matplotlib.pyplot as plt
 import time
 import yaml
 
-ACTION_LIMIT_LOW = -100
-ACTION_LIMIT_HIGH = 100
+ACTION_LIMIT_LOW = -20
+ACTION_LIMIT_HIGH = 20
 NUM_ACTIONS = 10000
-NAME_ENV = 'Swimmer-v3'
+# NAME_ENV = 'Swimmer-v3'
+# OBS_DIM = 10
+# VIEW_OBS_DIM = 10
+# ACT_DIM = 2
+NAME_ENV = 'Ant-v3'
+OBS_DIM = 15+6+8+14*6
+VIEW_OBS_DIM = 28
+ACT_DIM = 8
 
 env = gym.make(NAME_ENV, exclude_current_positions_from_observation=False)
 env = env.unwrapped
 
 obs = env.reset()
 
-states = np.array([]).reshape(0, 10)
+states = np.array([]).reshape(0, OBS_DIM)
 
 for i in range(NUM_ACTIONS):
 
     # action = np.random.uniform(ACTION_LIMIT_LOW, ACTION_LIMIT_HIGH, 2)
-    action = np.clip(np.random.normal(0.0, 0.5, 2), ACTION_LIMIT_LOW, ACTION_LIMIT_HIGH)
+    action = np.clip(np.random.normal(0.0, 0.5, ACT_DIM), ACTION_LIMIT_LOW, ACTION_LIMIT_HIGH)
     obs, reward, done, info = env.step(action)
-    obs = np.array(obs).reshape(1, 10)
+    obs = np.array(obs).reshape(1, OBS_DIM)
     states = np.vstack((states, obs))
 
 # x = states[:, 0]
@@ -48,18 +55,26 @@ for i in range(NUM_ACTIONS):
 
 # states_dist = {'mean': mean.tolist(), 'cov': cov.tolist(), 'n_dims': 10}
 
-# with open('states.yaml', 'w') as f:
+# with open(NAME_ENV+'_states.yaml', 'w') as f:
 #     yaml.dump(states_dist, f)
 
+# swimmer
+# titles = ['x', 'y', 'theta1', 'theta2', 'theta3', \
+#     'dot_x', 'dot_y', 'dot_theta1', 'dot_theta2', 'dot_theta3']
 
-titles = ['x', 'y', 'theta1', 'theta2', 'theta3', \
-    'dot_x', 'dot_y', 'dot_theta1', 'dot_theta2', 'dot_theta3']
+# ant 
+titles = ['x', 'y', 'qx', 'qy', 'qz', 'qw', \
+        'theta1', 'theta2', 'theta3', 'theta4', \
+        'theta5', 'theta6', 'theta7', 'theta8',
+        'dot_x', 'dot_y', 'dot_z', 'omega_x', 'omega_y', 'omega_z',
+        'dot_theta1', 'dot_theta2', 'dot_theta3', 'dot_theta4', \
+        'dot_theta5', 'dot_theta6', 'dot_theta7', 'dot_theta8']
 
 # 2, 5 ,1
-for i in range(10):
+for i in range(VIEW_OBS_DIM):
     print(titles[i], '  max', np.max(states[:, i]), '   min', np.min(states[:,i]))
 
-    plt.subplot(2, 5, i+1)
+    plt.subplot(2, VIEW_OBS_DIM/2, i+1)
     plt.hist(states[:, i], bins='auto') 
     plt.title(titles[i])
 
