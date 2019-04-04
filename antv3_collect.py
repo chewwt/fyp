@@ -7,27 +7,39 @@ from stable_baselines import PPO2
 
 NUM_EPISODES = 5
 NAME_ENV = 'Ant-v3'
-# BASE_TRAIN_STEPS = 1000000
-# TOTAL_TRAIN_STEPS = 1200000
-BASE_TRAIN_STEPS = 20000
-TOTAL_TRAIN_STEPS = 30000
+BASE_TRAIN_STEPS = 800000
+TOTAL_TRAIN_STEPS = 1000000
+# BASE_TRAIN_STEPS = 20000
+# TOTAL_TRAIN_STEPS = 30000
 
-ctrl_cost_weights = [0.5, 0.505, 0.495]    # first is default
-contact_cost_weights = [5e-4, 5e-4, 5e-4]    # first is default
+# ctrl_cost_weights = [0.5, 0.505, 0.495]    # first is default
+# contact_cost_weights = [5e-4, 5e-4, 5e-4]    # first is default
+
+ctrl_cost_weights = [    0.5, 0.51, 0.49,    0.5,    0.5, 0.52, 0.48, 0.515, 0.485, 0.55, 0.45,     0.5,     0.5,  0.6,  0.4,    0.5,    0.5,  0.505,  0.505,  0.495,  0.495]    # first is default
+contact_cost_weights = [5e-4, 5e-4, 5e-4, 5.1e-4, 4.9e-4, 5e-4, 5e-4,  5e-4,  5e-4, 5e-4, 5e-4, 5.05e-4, 4.95e-4, 5e-4, 5e-4, 5.5e-4, 4.5e-4, 5.1e-4, 4.9e-4, 5.1e-4, 4.9e-4]    # first is default
+
+TRAIN_BASE_MODEL = False # set to False if base and r0 from base is already trained. TODO detect the folder autonomatically?
+
+print('Training', len(ctrl_cost_weights) if TRAIN_BASE_MODEL else len(ctrl_cost_weights) - 1, 'models')
 
 model_names = []
 
-model_names.append('antv3_unclip_20_unhide_r0_base_ctrl_w_' + str(ctrl_cost_weights[0]).replace('.','-') + '_contact_w_' + str(contact_cost_weights[0]).replace('.','-') + '_ppo2_' + str(BASE_TRAIN_STEPS))
+model_names.append('antv3_unclip_20_unhide_r0_base2_ctrl_w_' + str(ctrl_cost_weights[0]).replace('.','-') + '_contact_w_' + str(contact_cost_weights[0]).replace('.','-') + '_ppo2_' + str(BASE_TRAIN_STEPS))
 
 for i in range(len(ctrl_cost_weights)):
-    model_names.append('antv3_unclip_20_unhide_r' + str(i) + '_from_base_' + str(BASE_TRAIN_STEPS) + '_ctrl_w_' + str(ctrl_cost_weights[i]).replace('.','-') + '_contact_w_' + str(contact_cost_weights[i]).replace('.','-') + '_ppo2_' + str(TOTAL_TRAIN_STEPS))
+    if not TRAIN_BASE_MODEL and i == 0:
+        continue
+
+    model_names.append('antv3_unclip_20_unhide_r' + str(i) + '_from_base2_' + str(BASE_TRAIN_STEPS) + '_ctrl_w_' + str(ctrl_cost_weights[i]).replace('.','-') + '_contact_w_' + str(contact_cost_weights[i]).replace('.','-') + '_ppo2_' + str(TOTAL_TRAIN_STEPS))
 
 
 for mi in range(len(model_names)):
     if mi == 0:
         wi = 0    # weight index
-    else: 
+    elif TRAIN_BASE_MODEL: 
         wi = mi - 1
+    else:
+        wi = mi
     print('Creating an ', NAME_ENV, ' environment with')
     print('            ctrl_cost_weight:', ctrl_cost_weights[wi])
     print('         contact_cost_weight:', contact_cost_weights[wi])
@@ -41,12 +53,15 @@ for mi in range(len(model_names)):
     # env.seed(1)
 
     if mi == 0:    # base policy
-        model = PPO2('MlpPolicy', env, tensorboard_log='./' + model_names[mi] + '_tb/')
+        if TRAIN_BASE_MODEL:
+            model = PPO2('MlpPolicy', env, tensorboard_log='./' + model_names[mi] + '_tb/')
 
-        print('Learning Base PPO2 model:', model_names[mi])
-        # learning
-        model.learn(total_timesteps=BASE_TRAIN_STEPS, tb_log_name=model_names[mi])
-        model.save(model_names[mi])
+            print('Learning Base PPO2 model:', model_names[mi])
+            # # learning
+            model.learn(total_timesteps=BASE_TRAIN_STEPS, tb_log_name=model_names[mi])
+            model.save(model_names[mi])
+        else:
+            continue
 
     else:
         print('Learning PPO2 model:', model_names[mi])
