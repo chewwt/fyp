@@ -7,10 +7,10 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 MAX_ITER = 11
 
-random_tb_files = 'antv3_unclip_20_unhide_random_base*_expert_r0_trajsteps_1_nstates_100_nsamples_50*/r0/*'
+random_tb_files = 'antv3_unclip_20_unhide_random_base2_expert_r0_trajsteps_1_nstates_100_nsamples_50*/r0/*'
 # random_tbs = glob.glob(random_tb_files)
 
-mmd_tb_files = 'antv3_unclip_20_unhide_mmd_base*_expert_r0_trajsteps_1_nstates_100_nsamples_50*/r0/*'
+mmd_tb_files = 'antv3_unclip_20_unhide_mmd_base2_expert_r0_trajsteps_1_nstates_100_nsamples_50*/r0/*'
 # mmd_tbs = glob.glob(mmd_tb_files)
 
 values_r0 = {'random': np.array([]).reshape(-1, MAX_ITER), 'mmd': np.array([]).reshape(-1, MAX_ITER)}
