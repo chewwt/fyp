@@ -5,6 +5,7 @@ import argparse
 import yaml
 import numpy as np
 from scipy.stats import norm, multivariate_normal
+import glob
 
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -28,11 +29,12 @@ QVEL_END = 15+14
 
 OBS_DIMS = None
 
-N_POLICIES = 3
+N_POLICIES = 50
 
 MAX_ITER = 10
-N_STATES = 500
-# N_STATES = 10
+# N_STATES = 500 # SWIMMER
+# N_STATES = 10 # ANT
+N_STATES = 1000 # ANT
 TRAJ_STEPS = 1
 
 SIGMA = 7.0
@@ -227,7 +229,8 @@ class CycleTf():
             self.mvn['avg'] = tfd.Mixture(
                                     cat=tfd.Categorical(probs=tf.reshape(tf.tile(self.norm_prob_rs_ph, [N_STATES]), (N_STATES, N_POLICIES))), \
                                     # cat=tfd.Categorical(probs=[0.3, 0.3, 0.4]), \
-                                    components=[self.mvn[0], self.mvn[1], self.mvn[2]])
+                                    # components=[self.mvn[0], self.mvn[1], self.mvn[2]])
+                                    components=[self.mvn[k] for k in sorted(self.mvn.keys())])
 
             # self.mvn['avg'] = tfd.Mixture(
             #                         cat=tfd.Categorical(probs=[0.3, 0.3, 0.4]), \
@@ -281,6 +284,8 @@ class CycleTf():
                 # print(d)
                 self.raw_dists.append(d)
 
+            # weight the sum
+            self.raw_dists = self.raw_dists * tf.transpose(tf.reshape(tf.tile(self.norm_prob_rs_ph, [N_STATES]), (N_STATES, N_POLICIES)))
             self.mmd_dists = tf.reduce_sum(self.raw_dists, axis=0)
             self.best_index = tf.argmax(self.mmd_dists)
 
@@ -318,12 +323,15 @@ class CycleTf():
         # print('Done building tf graph')
 
     def setup_tensorboard(self, logdir='logs', measure='mvnkl'):
-        print('Setting up tensorboard')
+        print('Setting up tensorboard ', logdir)
 
         self.pr_writer = []
-        self.pr_writer.append(tf.summary.FileWriter(logdir + '/r0'))
-        self.pr_writer.append(tf.summary.FileWriter(logdir + '/r1'))
-        self.pr_writer.append(tf.summary.FileWriter(logdir + '/r2'))
+
+        for i in range(N_POLICIES):
+            self.pr_writer.append(tf.summary.FileWriter(logdir + '/r' + str(i)))
+            # self.pr_writer.append(tf.summary.FileWriter(logdir + '/r0'))
+            # self.pr_writer.append(tf.summary.FileWriter(logdir + '/r1'))
+            # self.pr_writer.append(tf.summary.FileWriter(logdir + '/r2'))
          
         # self.writer = tf.summary.FileWriter(logdir)
 
@@ -361,9 +369,10 @@ class CycleTf():
 
     #=================================#
 
-    # get a random state, return qpos, qvel
+    # get a random state, return qpos, qvel (if num=1)
     # compared visually to obtained states
-    def get_random_state(self, yaml_file=None):
+    # return list of random states
+    def get_random_state(self, yaml_file=None, num=1):
         if yaml_file is None: # only for swimmer
             qpos = np.array([0., 0., 0., 0., 0.])
             qpos[:2] = np.random.uniform(-2, 5, 2)
@@ -375,18 +384,29 @@ class CycleTf():
             qvel[2] = np.random.normal(0, 1.1)
             qvel[3:] = np.random.normal(0, 2.2, 2)
 
+            return qpos, qvel
+
         else:
-            with open(yaml_file, 'r') as f:
-                data = yaml.safe_load(f)
 
-            mean = np.array(data['mean'])
-            cov = np.array(data['cov'])
+            if hasattr(self, 'state_yaml_data') and self.state_yaml_data is not None:
+                pass
+            else:
+                with open(yaml_file, 'r') as f:
+                    data = yaml.safe_load(f)
+                    self.state_yaml_data = {'mean': np.array(data['mean']),
+                                            'cov': np.array(data['cov'])}
 
-            state = np.random.multivariate_normal(mean, cov)
-            qpos = state[:QPOS_END]
-            qvel = state[QPOS_END:QVEL_END]
+            # mean = np.array(data['mean'])
+            # cov = np.array(data['cov'])
+            if num == 1:
+                state = np.random.multivariate_normal(self.state_yaml_data['mean'], self.state_yaml_data['cov'])
+                qpos = state[:QPOS_END]
+                qvel = state[QPOS_END:QVEL_END]
+                return qpos, qvel
 
-        return qpos, qvel
+            else:
+                states = np.random.multivariate_normal(self.state_yaml_data['mean'], self.state_yaml_data['cov'], num)
+                return states
 
     def expert_predict(self, obs):
         if not self.mixture:
@@ -439,7 +459,6 @@ class CycleTf():
         return actions, states
 
 
-    # TODO try the action_probability function
     # def update_r_belief(self, obs, actions_E, states_E):
     def update_r_belief(self):
         
@@ -522,9 +541,16 @@ class CycleTf():
 
             print('----------------')
             print('Iteration', i)
+
+            rand_states = self.get_random_state(yaml_file=NAME_ENV+'_states.yaml', num=N_STATES)
+            # states = [states[:, :QPOS_END], states[:, QPOS_END:QVEL_END]]  #[all qpos, all qvel]
+
+            # print(states.shape)
             
             for si in range(N_STATES):
-                new_qpos, new_qvel = self.get_random_state(yaml_file=NAME_ENV+'_states.yaml')
+                # new_qpos, new_qvel = self.get_random_state(yaml_file=NAME_ENV+'_states.yaml')
+                new_qpos = rand_states[si, :QPOS_END]
+                new_qvel = rand_states[si, QPOS_END: QVEL_END]
                 self.env.set_state(new_qpos, new_qvel)
                 states.append([new_qpos, new_qvel])
 
@@ -565,7 +591,7 @@ class CycleTf():
                 #                                         feed_dict=feeddict)
                 # print(samples_avg.shape)
                 
-                best_index, dists, summary_dist = self.sess.run([self.best_index, self.mmd_dists, self.summary_dist_op],
+                best_index, summary_dist = self.sess.run([self.best_index, self.summary_dist_op],
                                                                 feed_dict=feeddict)
                 # best_index, mmd_dists, raw_dists, mmd_K, mmd_mul, mmd_sqnorms, mmd_gamma = self.sess.run([self.best_index, self.mmd_dists, self.raw_dists, self.mmd_K, self.mmd_mul, self.mmd_sqnorms, self.mmd_gamma],
                 #                                         feed_dict=feeddict)
@@ -614,7 +640,7 @@ class CycleTf():
         #------ Store results in tensorboard ------#
         for pi in range(N_POLICIES):
             summary_pr = self.sess.run(self.summary_pr_op, {self.scalar_pr_ph: self.prob_rs[pi]})
-            self.pr_writer[pi].add_summary(summary_pr, i)
+            self.pr_writer[pi].add_summary(summary_pr, i+1)
 
 
 def main(logdir, measure, unhide):
@@ -627,7 +653,15 @@ def main(logdir, measure, unhide):
     # model_names = ['swimmerv3_unclip_50_unhide_r0_from_base6_2500000_fwd_w_1-0_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_50_unhide_r1_from_base6_2500000_fwd_w_1-05_ctrl_w_0-0001_ppo2_3000000', 'swimmerv3_unclip_50_unhide_r2_from_base6_2500000_fwd_w_0-95_ctrl_w_0-0001_ppo2_3000000']
     # model_names = ['swimmerv3_unclip_20_unhide_r0_from_base9_1000000_fwd_w_1-0_ctrl_w_0-0001_ppo2_1500000', 'swimmerv3_unclip_20_unhide_r1_from_base9_1000000_fwd_w_1-05_ctrl_w_0-0001_ppo2_1500000', 'swimmerv3_unclip_20_unhide_r2_from_base9_1000000_fwd_w_0-95_ctrl_w_0-0001_ppo2_1500000']
     # model_names = ['swimmerv3_unclip_20_unhide_r0_from_base10_1000000_fwd_w_1-0_ctrl_w_0-0001_ppo2_1200000', 'swimmerv3_unclip_20_unhide_r1_from_base10_1000000_fwd_w_1-05_ctrl_w_0-0001_ppo2_1200000', 'swimmerv3_unclip_20_unhide_r2_from_base10_1000000_fwd_w_0-95_ctrl_w_0-0001_ppo2_1200000']
-    model_names = ['antv3_unclip_20_unhide_r0_from_base_1000000_ctrl_w_0-5_contact_w_0-0005_ppo2_1200000', 'antv3_unclip_20_unhide_r1_from_base_1000000_ctrl_w_0-505_contact_w_0-0005_ppo2_1200000', 'antv3_unclip_20_unhide_r2_from_base_1000000_ctrl_w_0-495_contact_w_0-0005_ppo2_1200000']
+    # model_names = ['antv3_unclip_20_unhide_r0_from_base_1000000_ctrl_w_0-5_contact_w_0-0005_ppo2_1200000', 'antv3_unclip_20_unhide_r1_from_base_1000000_ctrl_w_0-505_contact_w_0-0005_ppo2_1200000', 'antv3_unclip_20_unhide_r2_from_base_1000000_ctrl_w_0-495_contact_w_0-0005_ppo2_1200000']
+    # model_names = ['antv3_unclip_20_unhide_r0_from_base1_800000_ctrl_w_0-5_contact_w_0-0005_ppo2_1000000', 'antv3_unclip_20_unhide_r1_from_base1_800000_ctrl_w_0-505_contact_w_0-0005_ppo2_1000000', 'antv3_unclip_20_unhide_r2_from_base1_800000_ctrl_w_0-495_contact_w_0-0005_ppo2_1000000']
+    # model_names = ['antv3_unclip_20_unhide_r0_from_base2_800000_ctrl_w_0-5_contact_w_0-0005_ppo2_1000000', 'antv3_unclip_20_unhide_r1_from_base2_800000_ctrl_w_0-505_contact_w_0-0005_ppo2_1000000', 'antv3_unclip_20_unhide_r2_from_base2_800000_ctrl_w_0-495_contact_w_0-0005_ppo2_1000000']
+    # model_names = ['antv3_unclip_20_unhide_r0_from_base3_900000_ctrl_w_0-5_contact_w_0-0005_ppo2_1000000', 'antv3_unclip_20_unhide_r1_from_base3_900000_ctrl_w_0-505_contact_w_0-0005_ppo2_1000000', 'antv3_unclip_20_unhide_r2_from_base3_900000_ctrl_w_0-495_contact_w_0-0005_ppo2_1000000']
+    model_names = sorted(glob.glob('antv3_unclip_20_unhide_r*_from_base2_80000*'), key=lambda m: int(m[24:26].replace('_','')))
+
+    # print(model_names)
+    # print(len(model_names))
+    # return
 
     # expert_model = 'swimmerv3_unclip_unhide_r0_ppo2_3000000'
     # expert_model = 'swimmerv3_unclip_unhide_r1_fwd_w_1-05_ctrl_w_0-0001_ppo2_5000000'
@@ -638,7 +672,12 @@ def main(logdir, measure, unhide):
     # expert_model = 'swimmerv3_unclip_20_unhide_r0_base9_fwd_w_1-0_ctrl_w_0-0001_ppo2_1000000'
     # expert_model = 'swimmerv3_unclip_20_unhide_r0_base10_fwd_w_1-0_ctrl_w_0-0001_ppo2_1000000'
     # expert_model = 'swimmerv3_unclip_20_unhide_r0_base9_fwd_w_1-0_ctrl_w_0-0001_ppo2_1000000'
-    expert_model = 'antv3_unclip_20_unhide_r0_base_ctrl_w_0-5_contact_w_0-0005_ppo2_1000000'
+    # expert_model = 'antv3_unclip_20_unhide_r0_base_ctrl_w_0-5_contact_w_0-0005_ppo2_1000000'
+    # expert_model = 'antv3_unclip_20_unhide_r0_base1_ctrl_w_0-5_contact_w_0-0005_ppo2_800000'
+    # expert_model = 'antv3_unclip_20_unhide_r0_from_base1_800000_ctrl_w_0-5_contact_w_0-0005_ppo2_1000000'
+    expert_model = 'antv3_unclip_20_unhide_r0_from_base2_800000_ctrl_w_0-5_contact_w_0-0005_ppo2_1000000'
+    # expert_model = 'antv3_unclip_20_unhide_r0_base2_ctrl_w_0-5_contact_w_0-0005_ppo2_800000'
+    # expert_model = 'antv3_unclip_20_unhide_r0_from_base3_900000_ctrl_w_0-5_contact_w_0-0005_ppo2_1000000'
     
     cycle = CycleTf()
     cycle.setup(model_names, expert_model, logdir=logdir, measure=measure, unhide=unhide)
@@ -653,7 +692,7 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser(description='Run Active Learning for IRL cycle using stochastic stable baselines models on Swimmer-v3 from OpenAI Gym')
     p.add_argument('--logdir', type=str, default='logs', help='directory to save tensorboard summaries to')
     p.add_argument('--measure', type=str, default='mvnkl', help='distance measure to compare distributions with. mvnkl or mmd or random')
-    p.add_argument('--unhide', type=bool, default=False, help='whether to include all states for observations')
+    p.add_argument('--unhide', type=bool, default=True, help='whether to include all states for observations')
 
     args = p.parse_args()
 
