@@ -88,6 +88,7 @@ class CycleTf():
         #------ init reward beliefs --------#    
         self.prob_rs = np.array(N_POLICIES * [1./N_POLICIES])
         self.log_prob_rs = np.log(self.prob_rs)
+        self.trajs = {}
 
         self.measure = measure
 
@@ -439,40 +440,45 @@ class CycleTf():
 
 
     # TODO try the action_probability function
-    def update_r_belief(self, obs, actions_E, states_E):
+    # def update_r_belief(self, obs, actions_E, states_E):
+    def update_r_belief(self):
         
         llh_trajs = np.array([0.] * N_POLICIES)
         # temp = np.array([1.] * N_POLICIES)
         print('updating r belief...')
-        for a, next_obs in zip(actions_E, states_E):
-            for i,m in enumerate(self.models):
+        # for a, next_obs in zip(actions_E, states_E):
+        for i,m in enumerate(self.models):
 
-                # MULTIVARIATE NORMAL
-                mus, sigmas = m.action_probability(obs) # [[mu1, mu2]], [[sigma1, sigma2]]
-                cov = np.diag(np.squeeze(sigmas))
-                a = np.squeeze(a)
-                log_prob = multivariate_normal.logpdf(a, np.squeeze(mus), cov)
-                prob = multivariate_normal.pdf(a, np.squeeze(mus), cov)
-                # ONLY ACTION DIM 1 compared
-                # p = m.action_probability(obs) # [[mu1, mu2], [sigma1, sigma2]]
-                # p = np.squeeze(p)
-                # a = np.squeeze(a)
-                # print(p)
-                # print(a)
-                # log_p1 = norm(p[0][0], p[1][0]).logpdf(a[0])
-                # p2 = norm(p[0][1], p[1][1]).pdf(a[1])
-                # print(mus, cov)
-                # print(p)
+            for k in self.trajs.keys():
+                obs = self.trajs[k]['obs']
+                for a, next_obs in zip(self.trajs[k]['actions_E'], self.trajs[k]['states_E']):
 
-                # temp[i] *= p1
+                    # MULTIVARIATE NORMAL
+                    mus, sigmas = m.action_probability(obs) # [[mu1, mu2]], [[sigma1, sigma2]]
+                    cov = np.diag(np.squeeze(sigmas))
+                    a = np.squeeze(a)
+                    log_prob = multivariate_normal.logpdf(a, np.squeeze(mus), cov)
+                    # prob = multivariate_normal.pdf(a, np.squeeze(mus), cov)
+                    # ONLY ACTION DIM 1 compared
+                    # p = m.action_probability(obs) # [[mu1, mu2], [sigma1, sigma2]]
+                    # p = np.squeeze(p)
+                    # a = np.squeeze(a)
+                    # print(p)
+                    # print(a)
+                    # log_p1 = norm(p[0][0], p[1][0]).logpdf(a[0])
+                    # p2 = norm(p[0][1], p[1][1]).pdf(a[1])
+                    # print(mus, cov)
+                    # print(p)
 
-                print(i, np.exp(log_prob), 'action_prob', mus, sigmas)
+                    # temp[i] *= p1
 
-                # llh_trajs[i] *= p1 * p2
-                llh_trajs[i] += log_prob
-                # llh_trajs[i] += log_p1
+                    # print(i, np.exp(log_prob), 'action_prob', mus, sigmas)
 
-            obs = [next_obs]
+                    # llh_trajs[i] *= p1 * p2
+                    llh_trajs[i] += log_prob
+                    # llh_trajs[i] += log_p1
+
+                    obs = [next_obs]
 
         print(llh_trajs)
         self.log_prob_rs += llh_trajs
@@ -484,7 +490,6 @@ class CycleTf():
 
         # normalizing
         self.prob_rs = np.exp(self.log_prob_rs)
-        # print(self.prob_rs)
         self.prob_rs /= np.sum(self.prob_rs)
         self.log_prob_rs = np.log(self.prob_rs)
         
@@ -514,6 +519,9 @@ class CycleTf():
             states = []
             action_probs = self.action_probs_init()
             feeddict = {}
+
+            print('----------------')
+            print('Iteration', i)
             
             for si in range(N_STATES):
                 new_qpos, new_qvel = self.get_random_state(yaml_file=NAME_ENV+'_states.yaml')
@@ -590,8 +598,10 @@ class CycleTf():
             obs = obs.reshape((-1,OBS_DIMS))
 
             actions_E, states_E = self.get_traj(obs)
-            print(actions_E, states_E)
-            self.update_r_belief(obs, actions_E, states_E)
+            self.trajs[i] = {'obs': obs, 'actions_E': actions_E, 'states_E': states_E}
+            # print(actions_E, states_E)
+            # self.update_r_belief(obs, actions_E, states_E)
+            self.update_r_belief()
 
             # print(self.log_prob_rs)
             # self.log_prob_rs
