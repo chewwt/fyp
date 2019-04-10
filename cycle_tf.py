@@ -71,6 +71,11 @@ class CycleTf():
         # to reproduce results
         # env.seed(1)
         global OBS_DIMS
+
+        print('===========')
+        print('    o  _ o ')
+        print('===========')
+
         if unhide:
             OBS_DIMS = UNHIDE_OBS_DIMS
         else:
@@ -531,28 +536,45 @@ class CycleTf():
 
     #================= Cycle ===================#
 
-    def new_cycle(self):
+    def new_cycle(self, all_states=None):
         obs = self.env.reset()
 
-        for i in range(MAX_ITER):
-            states = []
+        if all_states is None:
+            all_states = [] # store all the states so can run another measure with the same states
+            generate_states = True
+        else:
+            all_states = all_states
+            generate_states = False
+
+        for i in range(MAX_ITER):            
             action_probs = self.action_probs_init()
             feeddict = {}
 
             print('----------------')
             print('Iteration', i)
 
-            rand_states = self.get_random_state(yaml_file=NAME_ENV+'_states.yaml', num=N_STATES)
-            # states = [states[:, :QPOS_END], states[:, QPOS_END:QVEL_END]]  #[all qpos, all qvel]
+            if generate_states:
+                rand_states = self.get_random_state(yaml_file=NAME_ENV+'_states.yaml', num=N_STATES)
+                states = []
+                # states = [states[:, :QPOS_END], states[:, QPOS_END:QVEL_END]]  #[all qpos, all qvel]
+            else:
+                states = all_states[i]
 
             # print(states.shape)
             
             for si in range(N_STATES):
                 # new_qpos, new_qvel = self.get_random_state(yaml_file=NAME_ENV+'_states.yaml')
-                new_qpos = rand_states[si, :QPOS_END]
-                new_qvel = rand_states[si, QPOS_END: QVEL_END]
-                self.env.set_state(new_qpos, new_qvel)
-                states.append([new_qpos, new_qvel])
+                if generate_states:
+                    new_qpos = rand_states[si, :QPOS_END]
+                    new_qvel = rand_states[si, QPOS_END: QVEL_END]
+                    self.env.set_state(new_qpos, new_qvel)
+                    states.append([new_qpos, new_qvel])
+                else:
+                    new_qpos, new_qvel = states[si]
+                    self.env.set_state(new_qpos, new_qvel)
+
+                if self.measure == 'random':
+                    continue
 
                 obs = self.env._get_obs()
                 obs = obs.reshape((-1,OBS_DIMS))
@@ -629,6 +651,8 @@ class CycleTf():
             # self.update_r_belief(obs, actions_E, states_E)
             self.update_r_belief()
 
+            all_states.append(states)
+
             # print(self.log_prob_rs)
             # self.log_prob_rs
 
@@ -642,8 +666,11 @@ class CycleTf():
             summary_pr = self.sess.run(self.summary_pr_op, {self.scalar_pr_ph: self.prob_rs[pi]})
             self.pr_writer[pi].add_summary(summary_pr, i+1)
 
+        return all_states
+
 
 def main(logdir, measure, unhide):
+
     # model_names = ['swimmer_r0_ppo2_3000000', 'swimmer_r1new_ppo2_3000000', 'swimmer_r2_ppo2_3000000']
     # model_names = ['swimmerv3_r0_ppo2_3000000', 'swimmerv3_r1_ppo2_3000000', 'swimmerv3_r2_ppo2_3000000']
     # model_names = ['swimmerv3_unclip_unhide_r0_ppo2_3000000', 'swimmerv3_unclip_unhide_r1_ppo2_3000000', 'swimmerv3_unclip_unhide_r2_ppo2_3000000']
@@ -679,19 +706,27 @@ def main(logdir, measure, unhide):
     # expert_model = 'antv3_unclip_20_unhide_r0_base2_ctrl_w_0-5_contact_w_0-0005_ppo2_800000'
     # expert_model = 'antv3_unclip_20_unhide_r0_from_base3_900000_ctrl_w_0-5_contact_w_0-0005_ppo2_1000000'
     
-    cycle = CycleTf()
-    cycle.setup(model_names, expert_model, logdir=logdir, measure=measure, unhide=unhide)
-    # cycle.setup(model_names, expert_mixture=[0.7, 0.15, 0.15], logdir=logdir, measure=measure, unhide=unhide)
-    # prob_rs_history = cycle.cycle()
-    # cycle.plot_prob_rs(prob_rs_history)
-    cycle.new_cycle()
-    cycle.cleanup()
+    if measure == 'mmd_comp':  # HACK_JOB
+        measures = ['mmd', 'random']
+    else:
+        measures = [measure]
+
+    all_states = None
+
+    for m in measures:
+        cycle = CycleTf()
+        cycle.setup(model_names, expert_model, logdir=m+'_'+logdir, measure=m, unhide=unhide)
+        # cycle.setup(model_names, expert_mixture=[0.7, 0.15, 0.15], logdir=logdir, measure=measure, unhide=unhide)
+        # prob_rs_history = cycle.cycle()
+        # cycle.plot_prob_rs(prob_rs_history)
+        all_states = cycle.new_cycle(all_states=all_states)
+        cycle.cleanup()
 
 if __name__ == '__main__':
 
     p = argparse.ArgumentParser(description='Run Active Learning for IRL cycle using stochastic stable baselines models on Swimmer-v3 from OpenAI Gym')
     p.add_argument('--logdir', type=str, default='logs', help='directory to save tensorboard summaries to')
-    p.add_argument('--measure', type=str, default='mvnkl', help='distance measure to compare distributions with. mvnkl or mmd or random')
+    p.add_argument('--measure', type=str, default='mvnkl', help='distance measure to compare distributions with. mvnkl or mmd or random or mmd_comp')
     p.add_argument('--unhide', type=bool, default=True, help='whether to include all states for observations')
 
     args = p.parse_args()
